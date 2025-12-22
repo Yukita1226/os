@@ -106,7 +106,7 @@ export default function Home() {
                 OPTIMIZE FOR CLUSTER
               </button>
             </div>
-            <Editor height="350px" defaultLanguage="python" value={code} onChange={(v) => setCode(v || '')} options={{ minimap: { enabled: false }, fontSize: 13 }} />
+            <Editor height="800px" defaultLanguage="python" value={code} onChange={(v) => setCode(v || '')} options={{ minimap: { enabled: false }, fontSize: 13 }} />
           </div>
           <div className="bg-[#0d1117] p-4 rounded-xl text-xs text-green-400 min-h-[80px] border border-slate-800">
             <p className="text-slate-500 text-[9px] mb-2 font-bold uppercase tracking-widest">Single Core Output:</p>
@@ -128,7 +128,7 @@ export default function Home() {
                 </button>
               )}
             </div>
-            <Editor height="350px" defaultLanguage="python" value={cluster.code} options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13 }} />
+            <Editor height="800px" defaultLanguage="python" value={cluster.code} options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13 }} />
           </div>
           <div className="bg-[#0d1117] p-4 rounded-xl text-xs text-blue-400 min-h-[80px] border border-slate-800">
             <p className="text-slate-500 text-[9px] mb-2 font-bold uppercase tracking-widest">Cluster MPI Output:</p>
