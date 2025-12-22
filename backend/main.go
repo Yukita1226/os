@@ -13,20 +13,23 @@ import (
 )
 
 type DeployRequest struct {
-	Code string `json:"code"`
-	Mode string `json:"mode"` // เพิ่มโหมด "single" หรือ "cluster"
+	Code         string `json:"code"`
+	Mode         string `json:"mode"`
+	OnlyOptimize bool   `json:"onlyOptimize"`
 }
 
 func optimizeCodeWithAI(userCode string) (string, error) {
 	ctx := context.Background()
-	apiKey := "AIzaSyBFlYZs92YYa3SHG8kijw2hlq5EZcftVBc"
+	apiKey := "AIzaSyCegg7Ssvw7Q0OESl9OmOXDl-pTiZupVD0"
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
 		return "", err
 	}
 	defer client.Close()
 
-	model := client.GenerativeModel("models/gemini-2.0-flash")
+	// ✅ สลับเอา gemini-1.5-pro ขึ้นเป็นอันดับ 1
+	// โมเดลนี้จะฉลาดกว่า และมีเพดาน Quota แยกจากรุ่น Flash
+	modelNames := []string{"gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.5-flash"}
 
 	prompt := fmt.Sprintf(`
         Target: Convert Python code to use 'mpi4py' for a distributed cluster.
@@ -35,29 +38,36 @@ func optimizeCodeWithAI(userCode string) (string, error) {
         Return ONLY raw Python code without markdown blocks or explanations.
         
         Input Code:
-        %s
-    `, userCode)
+        %s`, userCode)
 
-	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
-	if err != nil {
-		model = client.GenerativeModel("models/gemini-flash-latest")
-		resp, err = model.GenerateContent(ctx, genai.Text(prompt))
+	var lastErr error
+	for _, mName := range modelNames {
+		fmt.Printf("🤖 Trying model: %s\n", mName)
+		model := client.GenerativeModel(mName)
+		resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+
 		if err != nil {
-			return "", fmt.Errorf("AI Error: %v", err)
+			lastErr = err
+			// ถ้าเจอ Error 429 (Quota เต็ม) ให้ข้ามไปลองตัวถัดไปทันที
+			if strings.Contains(err.Error(), "429") {
+				fmt.Printf("⚠️ Model %s is busy (Quota), switching...\n", mName)
+				continue
+			}
+			continue
+		}
+
+		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+			if part, ok := resp.Candidates[0].Content.Parts[0].(genai.Text); ok {
+				cleanCode := string(part)
+				cleanCode = strings.ReplaceAll(cleanCode, "```python", "")
+				cleanCode = strings.ReplaceAll(cleanCode, "```", "")
+				return strings.TrimSpace(cleanCode), nil
+			}
 		}
 	}
 
-	if len(resp.Candidates) > 0 {
-		if part, ok := resp.Candidates[0].Content.Parts[0].(genai.Text); ok {
-			cleanCode := string(part)
-			cleanCode = strings.ReplaceAll(cleanCode, "```python", "")
-			cleanCode = strings.ReplaceAll(cleanCode, "```", "")
-			return strings.TrimSpace(cleanCode), nil
-		}
-	}
-	return "", fmt.Errorf("AI could not process response")
+	return "", fmt.Errorf("AI Error: All models failed. Last error: %v", lastErr)
 }
-
 func main() {
 	r := gin.Default()
 
@@ -75,7 +85,17 @@ func main() {
 	r.POST("/deploy", func(c *gin.Context) {
 		var req DeployRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+			c.JSON(400, gin.H{"error": "Bad Request"})
+			return
+		}
+
+		if req.OnlyOptimize {
+			optimizedCode, err := optimizeCodeWithAI(req.Code)
+			if err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{"status": "success", "optimized_code": optimizedCode})
 			return
 		}
 
@@ -85,11 +105,19 @@ func main() {
 		var remoteCmd string
 		var finalCode string
 
-		if req.Mode == "cluster" {
-			fmt.Println("🤖 Mode: Cluster (MPI Optimization)")
+		if req.Mode == "cluster_run_only" {
+			finalCode = req.Code
+			remoteCmd = fmt.Sprintf(`cat << 'EOF' > /home/pi/cluster_job.py
+%s
+EOF
+cd /home/pi && mpiexec --hostfile cluster_hosts -n 12 \
+--mca plm_rsh_args "-o StrictHostKeyChecking=no" \
+--map-by :OVERSUBSCRIBE \
+python3 /home/pi/cluster_job.py`, finalCode)
+		} else if req.Mode == "cluster" {
 			optimizedCode, err := optimizeCodeWithAI(req.Code)
 			if err != nil {
-				c.JSON(500, gin.H{"error": "AI Optimization failed: " + err.Error()})
+				c.JSON(500, gin.H{"error": err.Error()})
 				return
 			}
 			finalCode = optimizedCode
@@ -101,23 +129,16 @@ cd /home/pi && mpiexec --hostfile cluster_hosts -n 12 \
 --map-by :OVERSUBSCRIBE \
 python3 /home/pi/cluster_job.py`, finalCode)
 		} else {
-			fmt.Println("🏃 Mode: Single Core (Sequential)")
-			finalCode = req.Code // ใช้โค้ดเดิม ไม่ผ่าน AI
+			finalCode = req.Code
 			remoteCmd = fmt.Sprintf(`cat << 'EOF' > /home/pi/single_job.py
 %s
 EOF
 python3 /home/pi/single_job.py`, finalCode)
 		}
 
-		fmt.Printf("🚀 Executing %s mode on Master...\n", req.Mode)
 		output, err := executeRemoteCommand(masterIp, user, pass, remoteCmd)
-
 		if err != nil {
-			c.JSON(500, gin.H{
-				"status":  "failed",
-				"message": "Execution failed",
-				"details": output,
-			})
+			c.JSON(500, gin.H{"status": "failed", "details": output})
 			return
 		}
 
@@ -139,19 +160,16 @@ func executeRemoteCommand(ip, user, password, cmd string) (string, error) {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         60 * time.Second,
 	}
-
 	client, err := ssh.Dial("tcp", ip+":22", config)
 	if err != nil {
 		return "", err
 	}
 	defer client.Close()
-
 	session, err := client.NewSession()
 	if err != nil {
 		return "", err
 	}
 	defer session.Close()
-
 	out, err := session.CombinedOutput(cmd)
 	return string(out), err
 }
