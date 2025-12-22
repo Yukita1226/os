@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/generative-ai-go/genai"
-	"golang.org/x/crypto/ssh"
 	"google.golang.org/api/option"
 )
 
@@ -27,35 +28,35 @@ func optimizeCodeWithAI(userCode string) (string, error) {
 	}
 	defer client.Close()
 
-	// ✅ สลับเอา gemini-1.5-pro ขึ้นเป็นอันดับ 1
-	// โมเดลนี้จะฉลาดกว่า และมีเพดาน Quota แยกจากรุ่น Flash
-	modelNames := []string{"gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.5-flash"}
+	// พยายามใช้รุ่น Pro ก่อนเพื่อความแม่นยำ
+	modelNames := []string{"gemini-1.5-pro", "gemini-2.5-flash"}
 
 	prompt := fmt.Sprintf(`
-        Target: Convert Python code to use 'mpi4py' for a distributed cluster.
-        Context: Running on a cluster with 'mpiexec --hostfile cluster_hosts -n 12'. 
-        Constraint: Ensure the code correctly implements MPI rank-based logic (comm.Get_rank()). 
-        Return ONLY raw Python code without markdown blocks or explanations.
-        
-        Input Code:
-        %s`, userCode)
+    Target: Convert Python code to use 'mpi4py' for a distributed cluster.
+    Context: Windows with MS-MPI, 4 Cores.
+    
+    Rules for AI:
+    - DO NOT use 'comm.scatterv' or 'comm.gatherv' (they don't exist in mpi4py).
+    - If you need to scatter variable-sized data, use NumPy with 'comm.Scatterv' (capitalized).
+    - Ensure 'import numpy as np' is included if you use it.
+    - Implement a PURE parallel sorting logic (Odd-Even Sort).
+    - Return ONLY raw Python code.
+	- Always use dtype=np.int32 for NumPy arrays to match MPI.INT.
+	- Ensure comm.Scatterv and comm.Gatherv use consistent types.
+	- Use local_chunk.copy() if needed before communication.
+	- Remember that comm.Gatherv on Windows requires the receive buffer to match the total size and type exactly."
+
+    Input Code:
+    %s`, userCode)
 
 	var lastErr error
 	for _, mName := range modelNames {
-		fmt.Printf("🤖 Trying model: %s\n", mName)
 		model := client.GenerativeModel(mName)
 		resp, err := model.GenerateContent(ctx, genai.Text(prompt))
-
 		if err != nil {
 			lastErr = err
-			// ถ้าเจอ Error 429 (Quota เต็ม) ให้ข้ามไปลองตัวถัดไปทันที
-			if strings.Contains(err.Error(), "429") {
-				fmt.Printf("⚠️ Model %s is busy (Quota), switching...\n", mName)
-				continue
-			}
 			continue
 		}
-
 		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
 			if part, ok := resp.Candidates[0].Content.Parts[0].(genai.Text); ok {
 				cleanCode := string(part)
@@ -65,9 +66,9 @@ func optimizeCodeWithAI(userCode string) (string, error) {
 			}
 		}
 	}
-
-	return "", fmt.Errorf("AI Error: All models failed. Last error: %v", lastErr)
+	return "", fmt.Errorf("AI Error: %v", lastErr)
 }
+
 func main() {
 	r := gin.Default()
 
@@ -99,77 +100,56 @@ func main() {
 			return
 		}
 
-		masterIp := "192.168.162.55"
-		user := "pi"
-		pass := "install123"
-		var remoteCmd string
-		var finalCode string
+		var cmd *exec.Cmd
+		var finalCode string = req.Code
+		// ใช้ Absolute Path เพื่อความชัวร์บน Windows
+		absPath, _ := filepath.Abs(".")
+		tempFileName := filepath.Join(absPath, "temp_job.py")
 
-		if req.Mode == "cluster_run_only" {
-			finalCode = req.Code
-			remoteCmd = fmt.Sprintf(`cat << 'EOF' > /home/pi/cluster_job.py
-%s
-EOF
-cd /home/pi && mpiexec --hostfile cluster_hosts -n 12 \
---mca plm_rsh_args "-o StrictHostKeyChecking=no" \
---map-by :OVERSUBSCRIBE \
-python3 /home/pi/cluster_job.py`, finalCode)
-		} else if req.Mode == "cluster" {
-			optimizedCode, err := optimizeCodeWithAI(req.Code)
-			if err != nil {
-				c.JSON(500, gin.H{"error": err.Error()})
-				return
+		if req.Mode == "cluster" || req.Mode == "cluster_run_only" {
+			if req.Mode == "cluster" {
+				optimized, err := optimizeCodeWithAI(req.Code)
+				if err != nil {
+					c.JSON(500, gin.H{"error": err.Error()})
+					return
+				}
+				finalCode = optimized
 			}
-			finalCode = optimizedCode
-			remoteCmd = fmt.Sprintf(`cat << 'EOF' > /home/pi/cluster_job.py
-%s
-EOF
-cd /home/pi && mpiexec --hostfile cluster_hosts -n 12 \
---mca plm_rsh_args "-o StrictHostKeyChecking=no" \
---map-by :OVERSUBSCRIBE \
-python3 /home/pi/cluster_job.py`, finalCode)
-		} else {
-			finalCode = req.Code
-			remoteCmd = fmt.Sprintf(`cat << 'EOF' > /home/pi/single_job.py
-%s
-EOF
-python3 /home/pi/single_job.py`, finalCode)
 		}
 
-		output, err := executeRemoteCommand(masterIp, user, pass, remoteCmd)
+		os.WriteFile(tempFileName, []byte(finalCode), 0644)
+
+		if req.Mode == "single" {
+			cmd = exec.Command("python", tempFileName)
+		} else {
+			// ✅ กำหนด Full Path ของ mpiexec โดยตรง
+			mpiPath := `C:\Program Files\Microsoft MPI\Bin\mpiexec.exe`
+
+			// เช็คว่าไฟล์มีจริงไหม ถ้าไม่มีให้ลองใช้ชื่อปกติ
+			if _, err := os.Stat(mpiPath); err == nil {
+				cmd = exec.Command(mpiPath, "-n", "4", "python", tempFileName)
+			} else {
+				cmd = exec.Command("mpiexec", "-n", "4", "python", tempFileName)
+			}
+		}
+
+		// ดึง Output และ Error
+		out, err := cmd.CombinedOutput()
+		outputStr := string(out)
+
 		if err != nil {
-			c.JSON(500, gin.H{"status": "failed", "details": output})
-			return
+			// กรณีรันไม่สำเร็จ ให้พ่น Error ออกไปดูว่าติดตรงไหน
+			outputStr = fmt.Sprintf("❌ Error: %v\nOutput: %s", err, outputStr)
 		}
 
 		c.JSON(200, gin.H{
 			"status":         "success",
 			"mode":           req.Mode,
 			"optimized_code": finalCode,
-			"output":         output,
+			"output":         outputStr,
 		})
 	})
 
+	fmt.Println("🚀 Windows Simulator Backend ready on http://localhost:8080")
 	r.Run(":8080")
-}
-
-func executeRemoteCommand(ip, user, password, cmd string) (string, error) {
-	config := &ssh.ClientConfig{
-		User:            user,
-		Auth:            []ssh.AuthMethod{ssh.Password(password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         60 * time.Second,
-	}
-	client, err := ssh.Dial("tcp", ip+":22", config)
-	if err != nil {
-		return "", err
-	}
-	defer client.Close()
-	session, err := client.NewSession()
-	if err != nil {
-		return "", err
-	}
-	defer session.Close()
-	out, err := session.CombinedOutput(cmd)
-	return string(out), err
 }
