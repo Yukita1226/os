@@ -21,7 +21,7 @@ type DeployRequest struct {
 
 func optimizeCodeWithAI(userCode string) (string, error) {
 	ctx := context.Background()
-	apiKey := "AIzaSyCegg7Ssvw7Q0OESl9OmOXDl-pTiZupVD0"
+	apiKey := "AIzaSyAVOc5Erzf9dA-Ehtmn8ZKg3JjSdg2sfCE"
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
 		return "", err
@@ -32,19 +32,26 @@ func optimizeCodeWithAI(userCode string) (string, error) {
 	modelNames := []string{"gemini-1.5-pro", "gemini-2.5-flash"}
 
 	prompt := fmt.Sprintf(`
-    Target: Convert Python code to use 'mpi4py' for a distributed cluster.
+    Target: Convert Python code to use 'mpi4py' for a distributed cluster or analyze its suitability.
     Context: Windows with MS-MPI, 4 Cores.
     
-    Rules for AI:
-    - DO NOT use 'comm.scatterv' or 'comm.gatherv' (they don't exist in mpi4py).
-    - If you need to scatter variable-sized data, use NumPy with 'comm.Scatterv' (capitalized).
-    - Ensure 'import numpy as np' is included if you use it.
-    - Implement a PURE parallel sorting logic (Odd-Even Sort).
-    - Return ONLY raw Python code.
-	- Always use dtype=np.int32 for NumPy arrays to match MPI.INT.
-	- Ensure comm.Scatterv and comm.Gatherv use consistent types.
-	- Use local_chunk.copy() if needed before communication.
-	- Remember that comm.Gatherv on Windows requires the receive buffer to match the total size and type exactly."
+    [CRITICAL ANALYSIS RULE]
+    Before converting, analyze if the input code is suitable for parallel processing.
+    If the code has high sequential dependency (e.g., Fibonacci, deep recursion) or the workload is too trivial for 4 cores:
+    - Return a Python script that ONLY contains a print statement explaining WHY it is not suitable.
+    - Example: print("NOTIFICATION: This code is highly sequential and not suitable for Cluster processing.")
+    - DO NOT attempt to parallelize if it will be slower than single-core.
+
+    [CONVERSION RULES - If suitable]
+    - MODULE: Use exactly 'from mpi4py import MPI' (DO NOT use 'mpi44py').
+    - NUMPY: Include 'import numpy as np' and 'import sys'.
+    - DATA TYPE: Always use 'dtype=np.int32' for ALL NumPy arrays to match 'MPI.INT'.
+    - SCATTER/GATHER: Use CAPITALIZED 'comm.Scatterv' and 'comm.Gatherv'. 
+    - SENDRECV: Use CAPITALIZED 'comm.Sendrecv'.
+    - PARAMS: For 'comm.Sendrecv', use: sendbuf=[data, MPI.INT], dest=target, recvbuf=[buffer, MPI.INT], source=target.
+    - SLICING: Always use 'local_chunk.copy()' before sending if the array is a slice.
+    - LOGIC: Implement PURE Parallel Odd-Even Transposition Sort for sorting tasks.
+    - OUTPUT: Return ONLY raw Python code without markdown blocks or explanations.
 
     Input Code:
     %s`, userCode)
