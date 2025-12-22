@@ -9,7 +9,7 @@ export default function Home() {
   const [status, setStatus] = useState<'idle' | 'processing'>('idle');
   const [aiStatus, setAiStatus] = useState<'idle' | 'optimizing'>('idle');
   const [isCopied, setIsCopied] = useState(false);
-  
+
   const [original, setOriginal] = useState({ output: '', time: 0 });
   const [cluster, setCluster] = useState({ code: '', output: '', time: 0 });
   const [benchmarkData, setBenchmarkData] = useState<any[]>([]);
@@ -22,7 +22,7 @@ export default function Home() {
       const response = await fetch('http://localhost:8080/deploy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: code, mode: 'cluster', onlyOptimize: true }), 
+        body: JSON.stringify({ code: code, mode: 'cluster', onlyOptimize: true }),
       });
       const data = await response.json();
       if (data.optimized_code) {
@@ -81,8 +81,8 @@ export default function Home() {
           <Cpu className="text-blue-400" size={32} />
           <h1 className="text-2xl font-black italic uppercase">Faster Processor</h1>
         </div>
-        <button 
-          onClick={handleRunBenchmark} 
+        <button
+          onClick={handleRunBenchmark}
           disabled={status !== 'idle' || !cluster.code}
           className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-8 rounded-xl shadow-lg transition-all flex items-center gap-2 disabled:opacity-50"
         >
@@ -97,12 +97,12 @@ export default function Home() {
           <div className="bg-white rounded-2xl shadow-md border border-slate-200 overflow-hidden relative">
             <div className="bg-slate-50 px-4 py-2 border-b border-slate-200 flex justify-between items-center">
               <span className="text-[10px] font-black text-slate-400 uppercase">OriginalCode.py</span>
-              <button 
+              <button
                 onClick={handleOptimize}
                 disabled={aiStatus !== 'idle'}
                 className="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
               >
-                {aiStatus === 'optimizing' ? <RefreshCw className="animate-spin" size={12}/> : <Sparkles size={12}/>}
+                {aiStatus === 'optimizing' ? <RefreshCw className="animate-spin" size={12} /> : <Sparkles size={12} />}
                 OPTIMIZE FOR CLUSTER
               </button>
             </div>
@@ -120,8 +120,8 @@ export default function Home() {
             <div className="bg-blue-50 px-4 py-2 border-b border-blue-100 flex justify-between items-center">
               <span className="text-[10px] font-black text-blue-600 uppercase">ClusterCode.py (Generated)</span>
               {cluster.code && (
-                <button 
-                  onClick={() => {navigator.clipboard.writeText(cluster.code); setIsCopied(true); setTimeout(() => setIsCopied(false), 2000)}}
+                <button
+                  onClick={() => { navigator.clipboard.writeText(cluster.code); setIsCopied(true); setTimeout(() => setIsCopied(false), 2000) }}
                   className="text-[10px] font-bold text-blue-600 bg-white border border-blue-200 px-2 py-1 rounded"
                 >
                   {isCopied ? "COPIED" : "COPY"}
@@ -139,34 +139,76 @@ export default function Home() {
 
       {/* Comparison Chart */}
       <div className="max-w-7xl mx-auto">
-        <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 h-[450px] relative">
-          <div className="absolute top-8 left-8">
-            <h3 className="text-sm font-black text-slate-400 uppercase tracking-[0.2em] mb-1 flex items-center gap-2">
-              <BarChart3 size={18} /> Performance Benchmark
-            </h3>
-            {benchmarkData.length > 0 && (
-              <p className="text-green-600 font-bold text-xs bg-green-50 px-3 py-1 rounded-full border border-green-100 inline-block">
-                {(benchmarkData[0].time / benchmarkData[1].time).toFixed(2)}x Faster than Sequential
-              </p>
-            )}
+        <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 h-[500px] relative">
+          <div className="flex justify-between items-start mb-8">
+            <div>
+              <h3 className="text-sm font-black text-slate-400 uppercase tracking-[0.2em] mb-3 flex items-center gap-2">
+                <BarChart3 size={18} /> Performance Benchmark (Log Scale)
+              </h3>
+              {benchmarkData.length > 0 && (
+                <div className="flex gap-3">
+                  <div className="bg-green-600 text-white px-4 py-2 rounded-xl shadow-lg shadow-green-200">
+                    <p className="text-[10px] uppercase font-bold opacity-80">Speedup Factor</p>
+                    <p className="text-xl font-black">
+                      {(benchmarkData[0].time / Math.max(benchmarkData[1].time, 0.0001)).toFixed(1)}x
+                    </p>
+                  </div>
+                  <div className="bg-slate-800 text-white px-4 py-2 rounded-xl shadow-lg shadow-slate-200">
+                    <p className="text-[10px] uppercase font-bold opacity-80">Efficiency (4-Core)</p>
+                    <p className="text-xl font-black">
+                      {((benchmarkData[0].time / Math.max(benchmarkData[1].time, 0.0001)) / 4 * 100).toFixed(1)}%
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-          
-          <div className="h-full pt-16">
+
+          [Image of performance speedup graph comparing sequential and parallel execution using log scale]
+
+          <div className="h-[320px]">
             {benchmarkData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="90%">
-                <BarChart data={benchmarkData} margin={{ top: 20, right: 30, left: 0, bottom: 20 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={benchmarkData}
+                  margin={{ top: 20, right: 30, left: 0, bottom: 20 }}
+                >
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 12, fontWeight: 600}} dy={10} />
-                  <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 12}} />
-                  <Tooltip 
-                    cursor={{fill: '#f8fafc'}}
-                    contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '12px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)', padding: '12px' }} 
-                    itemStyle={{ color: '#ffffff', fontWeight: 'bold' }} // ตัวหนังสือข้างในสีขาว
-                    labelStyle={{ color: '#94a3b8', marginBottom: '4px', fontSize: '10px', textTransform: 'uppercase' }}
+                  <XAxis
+                    dataKey="name"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: '#94a3b8', fontSize: 12, fontWeight: 600 }}
+                    dy={10}
                   />
-                  <Bar dataKey="time" radius={[8, 8, 8, 8]} barSize={60}>
+                  <YAxis
+                    scale="log"
+                    domain={[0.001, 'auto']}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: '#94a3b8', fontSize: 12 }}
+                    tickFormatter={(val) => val >= 1 ? `${val}s` : `${(val * 1000).toFixed(0)}ms`}
+                  />
+                  <Tooltip
+                    cursor={{ fill: '#f8fafc' }}
+                    contentStyle={{
+                      backgroundColor: '#1e293b',
+                      border: 'none',
+                      borderRadius: '12px',
+                      padding: '12px'
+                    }}
+                    itemStyle={{ color: '#ffffff', fontWeight: 'bold' }}
+                    labelStyle={{ color: '#94a3b8', fontSize: '10px', textTransform: 'uppercase', marginBottom: '4px' }}
+                    formatter={(value: number) => [`${value.toFixed(4)} Seconds`, 'Execution Time']}
+                  />
+                  <Bar dataKey="time" radius={[10, 10, 10, 10]} barSize={80}>
                     {benchmarkData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.fill} />
+                      <Cell
+                        key={`cell-${index}`}
+                        fill={entry.fill}
+                        // เพิ่มความสว่างเมื่อ hover
+                        className="cursor-pointer hover:opacity-80 transition-opacity"
+                      />
                     ))}
                   </Bar>
                 </BarChart>
@@ -174,7 +216,7 @@ export default function Home() {
             ) : (
               <div className="h-full flex flex-col items-center justify-center text-slate-300 gap-4">
                 <BarChart3 size={64} strokeWidth={1} />
-                <p className="font-medium">Please run code to visualize comparison data</p>
+                <p className="font-medium tracking-wide">Waiting for benchmark results...</p>
               </div>
             )}
           </div>

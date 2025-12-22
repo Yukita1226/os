@@ -32,29 +32,30 @@ func optimizeCodeWithAI(userCode string) (string, error) {
 	modelNames := []string{"gemini-1.5-pro", "gemini-2.5-flash"}
 
 	prompt := fmt.Sprintf(`
-    Target: Convert Python code to use 'mpi4py' for a distributed cluster or analyze its suitability.
+    Target: Convert Python code to use 'mpi4py' for a distributed cluster.
     Context: Windows with MS-MPI, 4 Cores.
     
     [CRITICAL ANALYSIS RULE]
-    Analyze if the input code is suitable for parallel processing.
-    If the code has high sequential dependency or the workload is too trivial (e.g., N < 1000):
-    - Return a script that ONLY prints a notification: print("NOTIFICATION: [Reason why not suitable]")
-    - DO NOT parallelize if it will be slower than single-core.
+    Analyze suitability. If sequential dependency is high or N < 1000, print "NOTIFICATION: [Reason]" and exit.
 
     [CONVERSION RULES - If suitable]
-    - MODULE: Use exactly 'from mpi4py import MPI'. NEVER use 'mpi44py'.
-    - LIBRARIES: Include 'import numpy as np', 'import sys', and 'import time'.
-    - DATA TYPE: Always use 'dtype=np.int32' for ALL NumPy arrays to match 'MPI.INT'.
-    - SCATTER/GATHER: Use CAPITALIZED 'comm.Scatterv' and 'comm.Gatherv'.
-    - SENDRECV: Use CAPITALIZED 'comm.Sendrecv' for data exchange.
+    - MODULE: Use 'from mpi4py import MPI'. Include 'import numpy as np', 'import sys', 'import time'.
+    - DATA TYPE: ALWAYS use 'dtype=np.int32' and 'MPI.INT' for all communications.
+    - SCATTER/GATHER: Use capitalized 'comm.Scatterv' and 'comm.Gatherv'.
+    - SENDRECV: Use capitalized 'comm.Sendrecv'. 
+      SYNTAX: comm.Sendrecv(sendbuf=[local_chunk, MPI.INT], dest=partner, recvbuf=[received_chunk, MPI.INT], source=partner)
     
-    [SORTING LOGIC - STRATEGIC]
-    - ALGORITHM: Implement "Parallel Odd-Even Merge-Split Sort".
-    - STEP 1: Initial local sort using 'local_chunk.sort()'.
-    - STEP 2: In each of the 'size' phases, partners MUST exchange their ENTIRE local chunks.
-    - STEP 3: Both processes must 'np.concatenate' their data with received data, then 'np.sort' the combined array.
-    - STEP 4: Lower rank keeps the first half (smaller), Higher rank keeps the second half (larger).
-    - SLICING: Always use '.copy()' after slicing (e.g., local_chunk = merged[:n].copy()) to ensure contiguous memory.
+    [STABILITY & PERFORMANCE RULES]
+    1. PARTNER BUFFER: Before Sendrecv, you MUST determine the partner's chunk size using the 'sendcounts' array to allocate 'received_chunk' correctly.
+    2. MEMORY: Always use '.copy()' after any slicing (e.g., merged[:n].copy()) to ensure contiguous memory for MPI.
+    3. SYNC: Use 'comm.Barrier()' after each Odd-Even phase to prevent race conditions.
+    4. TIMING: Use 'start_time = MPI.Wtime()' and 'end_time = MPI.Wtime()' on rank 0 for precision.
+
+    [SORTING LOGIC]
+    - ALGORITHM: "Parallel Odd-Even Merge-Split Sort".
+    - Initial 'local_chunk.sort()'.
+    - 'size' phases of exchanging ENTIRE chunks, merging, sorting, and splitting.
+    - Lower rank in pair keeps the smaller half, Higher rank keeps the larger half.
 
     - OUTPUT: Return ONLY raw Python code. No markdown, no explanations.
 
