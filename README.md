@@ -66,7 +66,8 @@
 
 **แผนภาพกระบวนการทำงาน (System Flowchart)**
 
-![แผนภาพกระบวนการทำงานทั้งหมด](<img width="4536" height="2520" alt="image" src="https://github.com/user-attachments/assets/9bd47e75-741c-47ec-a9f8-bc723cb9e097" />)
+![แผนภาพกระบวนการทำงานทั้งหมด]
+<img width="4536" height="2520" alt="image" src="https://github.com/user-attachments/assets/9bd47e75-741c-47ec-a9f8-bc723cb9e097" />
  *หน้าที่ เเบ่งได้ดังนี้*
 > - user = ทำการใส่ request ที่ต้องการเเละดูผลลัพธ์
 > - api = เป็นตัวกลางระหว่าง user กับ client
