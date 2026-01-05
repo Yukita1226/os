@@ -32,35 +32,43 @@ func optimizeCodeWithAI(userCode string) (string, error) {
 	modelNames := []string{"gemini-1.5-pro", "gemini-2.5-flash"}
 
 	prompt := fmt.Sprintf(`
-    Target: Convert Python code to use 'mpi4py' for a distributed cluster.
-    Context: Windows with MS-MPI, 4 Cores.
-    
-    [CRITICAL ANALYSIS RULE]
-    Analyze suitability. If sequential dependency is high or N < 1000, print "NOTIFICATION: [Reason]" and exit.
+Target: Convert Python code to use 'mpi4py' for a distributed cluster.
+Context: Windows with MS-MPI, 4 Cores. Optimization for SPEEDUP is mandatory.
 
-    [CONVERSION RULES - If suitable]
-    - MODULE: Use 'from mpi4py import MPI'. Include 'import numpy as np', 'import sys', 'import time'.
-    - DATA TYPE: ALWAYS use 'dtype=np.int32' and 'MPI.INT' for all communications.
-    - SCATTER/GATHER: Use capitalized 'comm.Scatterv' and 'comm.Gatherv'.
-    - SENDRECV: Use capitalized 'comm.Sendrecv'. 
-      SYNTAX: comm.Sendrecv(sendbuf=[local_chunk, MPI.INT], dest=partner, recvbuf=[received_chunk, MPI.INT], source=partner)
-    
-    [STABILITY & PERFORMANCE RULES]
-    1. PARTNER BUFFER: Before Sendrecv, you MUST determine the partner's chunk size using the 'sendcounts' array to allocate 'received_chunk' correctly.
-    2. MEMORY: Always use '.copy()' after any slicing (e.g., merged[:n].copy()) to ensure contiguous memory for MPI.
-    3. SYNC: Use 'comm.Barrier()' after each Odd-Even phase to prevent race conditions.
-    4. TIMING: Use 'start_time = MPI.Wtime()' and 'end_time = MPI.Wtime()' on rank 0 for precision.
+[CONSTRAINTS]
+- Output: Return ONLY raw Python code. 
+- Format: No markdown code blocks (no symbols like `+"```"+`), no explanations, no preamble.
+- Start directly with 'import sys'.
 
-    [SORTING LOGIC]
-    - ALGORITHM: "Parallel Odd-Even Merge-Split Sort".
-    - Initial 'local_chunk.sort()'.
-    - 'size' phases of exchanging ENTIRE chunks, merging, sorting, and splitting.
-    - Lower rank in pair keeps the smaller half, Higher rank keeps the larger half.
+[CRITICAL ANALYSIS RULE]
+Analyze suitability. If N < 1000, print ONLY "NOTIFICATION: [Reason]" and exit via 'sys.exit()' for all ranks.
 
-    - OUTPUT: Return ONLY raw Python code. No markdown, no explanations.
+[CONVERSION RULES]
+- MODULES: Use 'from mpi4py import MPI', 'import numpy as np', 'import sys', 'import time'.
+- DATA TYPE: ALWAYS use 'dtype=np.int32' and 'MPI.INT' for all communications.
+- WORK DISTRIBUTION: 
+    sendcounts = np.array([N // size + (1 if i < N %% size else 0) for i in range(size)], dtype=np.int32)
+    displs = np.array([sum(sendcounts[:i]) for i in range(size)], dtype=np.int32)
 
-    Input Code:
-    %s`, userCode)
+[STABILITY & PERFORMANCE RULES]
+1. TIMING: Define 'start_time = MPI.Wtime()' on rank 0 IMMEDIATELY BEFORE 'comm.Scatterv'.
+2. COLLECTIVES (SPEED OPTIMIZATION): 
+   - Use 'comm.Scatterv' to distribute data.
+   - For counting tasks, DO NOT use Gatherv for the entire array. 
+   - Each rank must calculate its local result (e.g., local_sum) as a numpy array of size 1.
+   - Use 'comm.Reduce(local_sum, global_sum, op=MPI.SUM, root=0)' to aggregate the final result.
+3. VECTORIZATION: Encourage using NumPy vectorized operations inside the local processing logic to outperform standard Python loops.
+4. SYNC: Use 'comm.Barrier()' before 'end_time = MPI.Wtime()' on rank 0.
+
+[ALGORITHM: Parallel Odd-Even Merge-Split Sort]
+(Use this ONLY if the input code is a sorting task)
+- Initial 'local_chunk.sort()'.
+- 'size' phases of exchange using 'comm.Sendrecv'.
+- Lower rank keeps smaller half, higher rank keeps larger half.
+- Use '.copy()' after slicing to ensure contiguous memory.
+
+Input Code:
+%s`, userCode)
 
 	var lastErr error
 	for _, mName := range modelNames {
