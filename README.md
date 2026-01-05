@@ -78,7 +78,7 @@ MPI ทำหน้าที่เป็น "ตัวกลาง" หรือ
 
 ## 4. ผลการดำเนินงาน
 
-* **ผลลัพธ์ที่ 1:** [อธิบาย]
+* **ผลลัพธ์ที่ 1:**
     <img width="1290" height="1198" alt="image" src="https://github.com/user-attachments/assets/d4471ba4-ab53-4b75-9b15-53f8231a7af2" />
     *ผลจากการทดสอบการรันโดยป้อนโค้ด หาค่า pi (function in py) เป็น input เเละผลลัพธ์เเสดงถึง ตัว code ที่ถูกดัดเเปลง เวลาที่ใช้ในการ execute เเละ ค่า efficient (calculated using time) 
 
