@@ -5,89 +5,96 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/generative-ai-go/genai"
 	"google.golang.org/api/option"
 )
 
-type DeployRequest struct {
-	Code         string `json:"code"`
-	Mode         string `json:"mode"`
-	OnlyOptimize bool   `json:"onlyOptimize"`
+type OptimizedSession struct {
+	SingleCode  string
+	ClusterCode string
 }
 
-func optimizeCodeWithAI(userCode string) (string, error) {
-	ctx := context.Background()
-	apiKey := "AIzaSyAVOc5Erzf9dA-Ehtmn8ZKg3JjSdg2sfCE"
-	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
+var (
+	sessionStore = make(map[string]OptimizedSession)
+	storeMutex   sync.Mutex
+	sessionID    = "default-user"
+)
+
+type CodeRequest struct {
+	Input string `json:"input"`
+}
+
+func getAIClient(ctx context.Context) (*genai.Client, error) {
+	apiKey := "AIzaSyBFlYZs92YYa3SHG8kijw2hlq5EZcftVBc"
+	return genai.NewClient(ctx, option.WithAPIKey(apiKey))
+}
+
+func generateCodes(ctx context.Context, input string) (string, string, error) {
+	client, err := getAIClient(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer client.Close()
 
-	// พยายามใช้รุ่น Pro ก่อนเพื่อความแม่นยำ
-	modelNames := []string{"gemini-1.5-pro", "gemini-2.5-flash"}
-
+	model := client.GenerativeModel("gemini-3-flash-preview")
 	prompt := fmt.Sprintf(`
-Target: Convert Python code to use 'mpi4py' for a distributed cluster.
-Context: Windows with MS-MPI, 4 Cores. Optimization for SPEEDUP is mandatory.
+[ROLE] 
+Expert in High-Performance Computing (HPC) and Python MPI Optimization.
 
-[CONSTRAINTS]
-- Output: Return ONLY raw Python code. 
-- Format: No markdown code blocks (no symbols like `+"```"+`), no explanations, no preamble.
-- Start directly with 'import sys'.
+[TASK] 
+Analyze the User Input and generate TWO separate Python versions:
+1. VERSION 1: SINGLE CORE (Sequential using NumPy/SciPy).
+2. VERSION 2: CLUSTER (MPI Parallelized using Master-Worker Architecture).
 
-[CRITICAL ANALYSIS RULE]
-Analyze suitability. If N < 1000, print ONLY "NOTIFICATION: [Reason]" and exit via 'sys.exit()' for all ranks.
+[ADAPTIVE LOGIC]
+- If the task is OPTIMIZATION: Use 'L-BFGS-B' and parallelize the Gradient/Objective.
+- If the task is MATRIX/LINEAR ALGEBRA: Use Row-wise decomposition with 'comm.Scatter' and 'comm.Gather'.
+- If the task is GENERAL COMPUTATION: Divide the data range/workload equally among MPI ranks.
 
-[CONVERSION RULES]
-- MODULES: Use 'from mpi4py import MPI', 'import numpy as np', 'import sys', 'import time'.
-- DATA TYPE: ALWAYS use 'dtype=np.int32' and 'MPI.INT' for all communications.
-- WORK DISTRIBUTION: 
-    sendcounts = np.array([N // size + (1 if i < N %% size else 0) for i in range(size)], dtype=np.int32)
-    displs = np.array([sum(sendcounts[:i]) for i in range(size)], dtype=np.int32)
+[STRICT ARCHITECTURE RULES]
+1. CONSISTENCY: Both versions must use the same algorithm and np.random.seed(42).
+2. THREAD CONTROL: Both versions MUST have 'os.environ["OMP_NUM_THREADS"] = "1"' at the start.
+3. MPI MASTER-WORKER (CRITICAL):
+   - Use a SINGLE tuple bcast: 'data = comm.bcast((task_id, payload), root=0)' for synchronization.
+   - Task IDs: 1 (Work), 0 (Stop).
+   - Use high-performance MPI calls: 'comm.Gatherv' or 'comm.Reduce' depending on the task.
+4. FORMAT: Separate the two versions with EXACTLY "===CLUSTER_VERSION_START===".
 
-[STABILITY & PERFORMANCE RULES]
-1. TIMING: Define 'start_time = MPI.Wtime()' on rank 0 IMMEDIATELY BEFORE 'comm.Scatterv'.
-2. COLLECTIVES (SPEED OPTIMIZATION): 
-   - Use 'comm.Scatterv' to distribute data.
-   - For counting tasks, DO NOT use Gatherv for the entire array. 
-   - Each rank must calculate its local result (e.g., local_sum) as a numpy array of size 1.
-   - Use 'comm.Reduce(local_sum, global_sum, op=MPI.SUM, root=0)' to aggregate the final result.
-3. VECTORIZATION: Encourage using NumPy vectorized operations inside the local processing logic to outperform standard Python loops.
-4. SYNC: Use 'comm.Barrier()' before 'end_time = MPI.Wtime()' on rank 0.
+[OUTPUT]
+Both versions MUST end with:
+print(f"Result: {final_result_value}")
+print(f"Time taken: {duration} seconds")
 
-[ALGORITHM: Parallel Odd-Even Merge-Split Sort]
-(Use this ONLY if the input code is a sorting task)
-- Initial 'local_chunk.sort()'.
-- 'size' phases of exchange using 'comm.Sendrecv'.
-- Lower rank keeps smaller half, higher rank keeps larger half.
-- Use '.copy()' after slicing to ensure contiguous memory.
+[STRICT] Return ONLY raw Python code. Start with 'import sys, time, numpy as np, os'.
 
-Input Code:
-%s`, userCode)
+User Input/Task: %s
+`, input)
 
-	var lastErr error
-	for _, mName := range modelNames {
-		model := client.GenerativeModel(mName)
-		resp, err := model.GenerateContent(ctx, genai.Text(prompt))
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
-			if part, ok := resp.Candidates[0].Content.Parts[0].(genai.Text); ok {
-				cleanCode := string(part)
-				cleanCode = strings.ReplaceAll(cleanCode, "```python", "")
-				cleanCode = strings.ReplaceAll(cleanCode, "```", "")
-				return strings.TrimSpace(cleanCode), nil
-			}
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil {
+		return "", "", err
+	}
+
+	var fullText string
+	if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+		for _, part := range resp.Candidates[0].Content.Parts {
+			fullText += fmt.Sprintf("%v", part)
 		}
 	}
-	return "", fmt.Errorf("AI Error: %v", lastErr)
+
+	fullText = strings.ReplaceAll(fullText, "```python", "")
+	fullText = strings.ReplaceAll(fullText, "```", "")
+
+	parts := strings.Split(fullText, "===CLUSTER_VERSION_START===")
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("AI failed to provide two distinct versions.")
+	}
+
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
 }
 
 func main() {
@@ -95,7 +102,6 @@ func main() {
 
 	r.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -104,73 +110,49 @@ func main() {
 		c.Next()
 	})
 
-	r.POST("/deploy", func(c *gin.Context) {
-		var req DeployRequest
+	r.POST("/api/optimize", func(c *gin.Context) {
+		var req CodeRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "Bad Request"})
+			c.JSON(400, gin.H{"error": "Invalid input"})
 			return
 		}
-
-		if req.OnlyOptimize {
-			optimizedCode, err := optimizeCodeWithAI(req.Code)
-			if err != nil {
-				c.JSON(500, gin.H{"error": err.Error()})
-				return
-			}
-			c.JSON(200, gin.H{"status": "success", "optimized_code": optimizedCode})
-			return
-		}
-
-		var cmd *exec.Cmd
-		var finalCode string = req.Code
-		// ใช้ Absolute Path เพื่อความชัวร์บน Windows
-		absPath, _ := filepath.Abs(".")
-		tempFileName := filepath.Join(absPath, "temp_job.py")
-
-		if req.Mode == "cluster" || req.Mode == "cluster_run_only" {
-			if req.Mode == "cluster" {
-				optimized, err := optimizeCodeWithAI(req.Code)
-				if err != nil {
-					c.JSON(500, gin.H{"error": err.Error()})
-					return
-				}
-				finalCode = optimized
-			}
-		}
-
-		os.WriteFile(tempFileName, []byte(finalCode), 0644)
-
-		if req.Mode == "single" {
-			cmd = exec.Command("python", tempFileName)
-		} else {
-			// ✅ กำหนด Full Path ของ mpiexec โดยตรง
-			mpiPath := `C:\Program Files\Microsoft MPI\Bin\mpiexec.exe`
-
-			// เช็คว่าไฟล์มีจริงไหม ถ้าไม่มีให้ลองใช้ชื่อปกติ
-			if _, err := os.Stat(mpiPath); err == nil {
-				cmd = exec.Command(mpiPath, "-n", "4", "python", tempFileName)
-			} else {
-				cmd = exec.Command("mpiexec", "-n", "4", "python", tempFileName)
-			}
-		}
-
-		// ดึง Output และ Error
-		out, err := cmd.CombinedOutput()
-		outputStr := string(out)
-
+		sCode, cCode, err := generateCodes(context.Background(), req.Input)
 		if err != nil {
-			// กรณีรันไม่สำเร็จ ให้พ่น Error ออกไปดูว่าติดตรงไหน
-			outputStr = fmt.Sprintf("❌ Error: %v\nOutput: %s", err, outputStr)
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
 		}
-
-		c.JSON(200, gin.H{
-			"status":         "success",
-			"mode":           req.Mode,
-			"optimized_code": finalCode,
-			"output":         outputStr,
-		})
+		storeMutex.Lock()
+		sessionStore[sessionID] = OptimizedSession{SingleCode: sCode, ClusterCode: cCode}
+		storeMutex.Unlock()
+		c.JSON(200, gin.H{"status": "optimized", "optimized_code": cCode})
 	})
 
-	fmt.Println("🚀 Windows Simulator Backend ready on http://localhost:8080")
+	r.POST("/api/run/single", func(c *gin.Context) {
+		storeMutex.Lock()
+		session, _ := sessionStore[sessionID]
+		storeMutex.Unlock()
+		os.WriteFile("temp_single.py", []byte(session.SingleCode), 0644)
+		out, err := exec.Command("python", "temp_single.py").CombinedOutput()
+		status := "success"
+		if err != nil {
+			status = "error"
+		}
+		c.JSON(200, gin.H{"output": string(out), "status": status})
+	})
+
+	r.POST("/api/run/cluster", func(c *gin.Context) {
+		storeMutex.Lock()
+		session, _ := sessionStore[sessionID]
+		storeMutex.Unlock()
+		os.WriteFile("temp_cluster.py", []byte(session.ClusterCode), 0644)
+		mpiPath := `C:\Program Files\Microsoft MPI\Bin\mpiexec.exe`
+		out, err := exec.Command(mpiPath, "-n", "4", "python", "temp_cluster.py").CombinedOutput()
+		status := "success"
+		if err != nil {
+			status = "error"
+		}
+		c.JSON(200, gin.H{"output": string(out), "status": status})
+	})
+
 	r.Run(":8080")
 }
