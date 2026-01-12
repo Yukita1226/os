@@ -22,14 +22,21 @@ var (
 	sessionStore = make(map[string]OptimizedSession)
 	storeMutex   sync.Mutex
 	sessionID    = "default-user"
+	nodes        = []string{"192.168.162.55", "192.168.162.56", "192.168.162.57"}
 )
 
-type CodeRequest struct {
-	Input string `json:"input"`
+// ฟังก์ชันช่วยส่งไฟล์ไปยังทุก Node
+func deployToCluster(filename string, content string) {
+	os.WriteFile(filename, []byte(content), 0644)
+	for _, node := range nodes {
+		dest := fmt.Sprintf("pi@%s:/home/pi/pi_libs/", node)
+		// ใช้ scp แบบ Background หรือเรียกแยกเพื่อความเร็ว
+		exec.Command("scp", "-o", "StrictHostKeyChecking=no", filename, dest).Run()
+	}
 }
 
 func getAIClient(ctx context.Context) (*genai.Client, error) {
-	apiKey := "AIzaSyBFlYZs92YYa3SHG8kijw2hlq5EZcftVBc"
+	apiKey := "AIzaSyAVOc5Erzf9dA-Ehtmn8ZKg3JjSdg2sfCE"
 	return genai.NewClient(ctx, option.WithAPIKey(apiKey))
 }
 
@@ -41,37 +48,45 @@ func generateCodes(ctx context.Context, input string) (string, string, error) {
 	defer client.Close()
 
 	model := client.GenerativeModel("gemini-3-flash-preview")
+	// ปรับ Prompt ให้เน้นการหารลงตัว (Divisible by 12)
 	prompt := fmt.Sprintf(`
 [ROLE] 
-Expert in High-Performance Computing (HPC) and Python MPI Optimization.
+Expert in High-Performance Computing (HPC) and Python MPI for Raspberry Pi 4 Clusters.
+
+[SYSTEM CONTEXT]
+- Hardware: 3 Nodes, Total 12 Ranks.
+- Memory: 4GB RAM per Node.
+
+[MEMORY SAFETY RULES]
+1. AVOID LARGE ARRAYS: For iterations over 50,000,000, DO NOT use 'np.arange' or create large lists.
+2. USE STREAMING/ITERATION: Use simple 'for' loops with an accumulator variable or 'np.array_split' to process data in small chunks.
+3. RAM LIMIT: Remember each Node has 4GB RAM shared among 4 ranks. Keep memory usage per rank below 500MB.
 
 [TASK] 
-Analyze the User Input and generate TWO separate Python versions:
-1. VERSION 1: SINGLE CORE (Sequential using NumPy/SciPy).
-2. VERSION 2: CLUSTER (MPI Parallelized using Master-Worker Architecture).
-
-[ADAPTIVE LOGIC]
-- If the task is OPTIMIZATION: Use 'L-BFGS-B' and parallelize the Gradient/Objective.
-- If the task is MATRIX/LINEAR ALGEBRA: Use Row-wise decomposition with 'comm.Scatter' and 'comm.Gather'.
-- If the task is GENERAL COMPUTATION: Divide the data range/workload equally among MPI ranks.
+Generate TWO Python versions for: %s
+1. VERSION 1: SINGLE CORE (Sequential).
+2. VERSION 2: CLUSTER (MPI 12 Ranks).
 
 [STRICT ARCHITECTURE RULES]
-1. CONSISTENCY: Both versions must use the same algorithm and np.random.seed(42).
-2. THREAD CONTROL: Both versions MUST have 'os.environ["OMP_NUM_THREADS"] = "1"' at the start.
-3. MPI MASTER-WORKER (CRITICAL):
-   - Use a SINGLE tuple bcast: 'data = comm.bcast((task_id, payload), root=0)' for synchronization.
-   - Task IDs: 1 (Work), 0 (Stop).
-   - Use high-performance MPI calls: 'comm.Gatherv' or 'comm.Reduce' depending on the task.
-4. FORMAT: Separate the two versions with EXACTLY "===CLUSTER_VERSION_START===".
+1. WORKLOAD: Ensure 'N' or 'iterations' is explicitly divisible by 12. Round up if necessary.
+2. THREADING: Both versions MUST start with:
+   import os
+   os.environ["OMP_NUM_THREADS"] = "1"
+3. MPI SILENCE RULE (CRITICAL): 
+   - ONLY rank 0 is allowed to print the final result and time.
+   - All other ranks (rank > 0) MUST NOT print anything to stdout.
+   - Use 'if rank == 0:' to wrap all print statements.
+4. MPI LOGIC: 
+   - Use 'comm.Reduce' or 'comm.Gather' to collect data to rank 0.
+   - For result consistency, use np.random.seed(42).
+5. FORMATTING:
+   - Separate with: ===CLUSTER_VERSION_START===
+   - Start with: import sys, time, numpy as np, os
+   - End both versions with exactly:
+     print(f"Result: {final_result_value}")
+     print(f"Time taken: {duration} seconds")
 
-[OUTPUT]
-Both versions MUST end with:
-print(f"Result: {final_result_value}")
-print(f"Time taken: {duration} seconds")
-
-[STRICT] Return ONLY raw Python code. Start with 'import sys, time, numpy as np, os'.
-
-User Input/Task: %s
+[STRICT] Return ONLY raw Python code.
 `, input)
 
 	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
@@ -88,10 +103,9 @@ User Input/Task: %s
 
 	fullText = strings.ReplaceAll(fullText, "```python", "")
 	fullText = strings.ReplaceAll(fullText, "```", "")
-
 	parts := strings.Split(fullText, "===CLUSTER_VERSION_START===")
 	if len(parts) < 2 {
-		return "", "", fmt.Errorf("AI failed to provide two distinct versions.")
+		return "", "", fmt.Errorf("AI failed partition")
 	}
 
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
@@ -100,6 +114,7 @@ User Input/Task: %s
 func main() {
 	r := gin.Default()
 
+	// CORS Setup...
 	r.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -111,42 +126,43 @@ func main() {
 	})
 
 	r.POST("/api/optimize", func(c *gin.Context) {
-		var req CodeRequest
+		var req struct{ Input string }
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "Invalid input"})
+			c.JSON(400, gin.H{"error": "Invalid"})
 			return
 		}
+
 		sCode, cCode, err := generateCodes(context.Background(), req.Input)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
+
+		// **จุดที่แก้ไข**: ส่งโค้ดไปรอไว้ที่ Cluster ทันที
+		go deployToCluster("temp_cluster.py", cCode)
+		deployToCluster("temp_single.py", sCode) // ส่งไป Master เพื่อรัน Single ด้วย
+
 		storeMutex.Lock()
 		sessionStore[sessionID] = OptimizedSession{SingleCode: sCode, ClusterCode: cCode}
 		storeMutex.Unlock()
+
 		c.JSON(200, gin.H{"status": "optimized", "optimized_code": cCode})
 	})
 
 	r.POST("/api/run/single", func(c *gin.Context) {
-		storeMutex.Lock()
-		session, _ := sessionStore[sessionID]
-		storeMutex.Unlock()
-		os.WriteFile("temp_single.py", []byte(session.SingleCode), 0644)
-		out, err := exec.Command("python", "temp_single.py").CombinedOutput()
-		status := "success"
-		if err != nil {
-			status = "error"
-		}
-		c.JSON(200, gin.H{"output": string(out), "status": status})
+		// รันบน Master (.55) เพื่อความยุติธรรมในการเทียบ Hardware เดียวกัน
+		remoteCmd := "cd /home/pi/pi_libs && python3 temp_single.py"
+		cmd := exec.Command("ssh", "-o", "StrictHostKeyChecking=no", "pi@192.168.162.55", remoteCmd)
+		out, _ := cmd.CombinedOutput()
+		c.JSON(200, gin.H{"output": string(out), "status": "success"})
 	})
 
 	r.POST("/api/run/cluster", func(c *gin.Context) {
-		storeMutex.Lock()
-		session, _ := sessionStore[sessionID]
-		storeMutex.Unlock()
-		os.WriteFile("temp_cluster.py", []byte(session.ClusterCode), 0644)
-		mpiPath := `C:\Program Files\Microsoft MPI\Bin\mpiexec.exe`
-		out, err := exec.Command(mpiPath, "-n", "4", "python", "temp_cluster.py").CombinedOutput()
+		// **จุดที่แก้ไข**: สั่งรันอย่างเดียว ไม่ต้อง SCP แล้ว
+		remoteCmd := "cd /home/pi/pi_libs && /usr/bin/mpiexec --hostfile cluster_hosts -n 12 --oversubscribe python3 temp_cluster.py"
+		cmd := exec.Command("ssh", "-o", "StrictHostKeyChecking=no", "pi@192.168.162.55", remoteCmd)
+		out, err := cmd.CombinedOutput()
+
 		status := "success"
 		if err != nil {
 			status = "error"
