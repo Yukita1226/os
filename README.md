@@ -131,3 +131,5 @@
 
 2.Donald Becker และ Thomas Sterling. (1994). Beowulf: A Parallel Workstation for Scientific Computation. สืบค้นเมื่อ 5 มกราคม 2569, จาก https://www.nasa.gov/centers/goddard/pdf/280965main_Beowulf_Overview.pdf
 
+3.Google DeepMind. (2023). Gemini: A Family of Highly Capable Multimodal Models. สืบค้นเมื่อ 5 มกราคม 2569, จาก https://deepmind.google/technologies/gemini/
+
